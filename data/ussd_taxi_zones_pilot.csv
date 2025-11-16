@@ -1,0 +1,33 @@
+zone_id,town,zone_name,zone_type,approx_distance_km,notes
+ZR-01,Zeerust,Zeerust CBD,Town Centre,0.0,"Main commercial area, taxi rank"
+ZR-02,Zeerust,Ikageleng,Township,3.0,High demand residential area
+ZR-03,Zeerust,Henryville,Suburb,4.0,Residential
+ZR-04,Zeerust,Olienhout Park,Suburb,5.0,Residential
+ZR-05,Zeerust,Shalimar Park,Suburb,6.0,Residential
+ZR-06,Zeerust,Zeerust Industrial Area,Industrial,3.0,Near factories and workplaces
+ZR-07,Zeerust,Hospital Area,Landmark,2.0,Near hospital — high pickup/dropoff
+ZR-08,Zeerust,Zeerust Taxi Rank,Transport Hub,0.5,Primary rank for short trips
+ZR-09,Zeerust,Rietpan,Settlement,11.0,"Nearby village, within 30 km"
+ZR-10,Zeerust,Dinokana,Settlement,12.0,Nearby settlement
+ZR-11,Zeerust,Lekgophung,Settlement,15.0,Residential village
+ZR-12,Zeerust,Motswedi,Settlement,18.0,Outlying but within 30 km
+ZR-13,Zeerust,Serake,Settlement,20.0,Outlying but feasible
+ZR-14,Zeerust,Mosweu,Settlement,22.0,"Feasible, on edge of 30 km"
+ZR-15,Zeerust,Ntsweletsoku,Settlement,23.0,Edge of feasible range
+ZR-16,Zeerust,Moshana,Settlement,25.0,Edge of feasible range
+ZR-17,Zeerust,Welbedacht (Lehurutshe),Township,20.0,Large township near Zeerust
+MK-01,Mahikeng,Mahikeng CBD,Town Centre,0.0,Main commercial area
+MK-02,Mahikeng,Mmabatho,Suburb,3.0,Major residential/administrative area
+MK-03,Mahikeng,Danville,Suburb,4.0,Residential
+MK-04,Mahikeng,Golf View,Suburb,5.0,Residential
+MK-05,Mahikeng,Riviera Park,Suburb,6.0,Residential
+MK-06,Mahikeng,Signal Hill,Suburb,7.0,Residential
+MK-07,Mahikeng,Unit 6,Suburb,3.0,Residential block area
+MK-08,Mahikeng,Unit 7,Suburb,4.0,Residential block area
+MK-09,Mahikeng,Unit 9,Suburb,5.0,Residential block area
+MK-10,Mahikeng,Montshiwa,Suburb,6.0,Residential
+MK-11,Mahikeng,Magogoe,Suburb,8.0,Residential/nearby community
+MK-12,Mahikeng,Rooigrond,Settlement,13.0,Nearby settlement within 30 km
+MK-13,Mahikeng,Slurry,Settlement,24.0,Edge of 30 km radius
+MK-14,Mahikeng,Ramatlabama,Settlement,26.0,Slightly near upper limit; still included
+MK-15,Mahikeng,Tsetse,Settlement,12.0,Nearby settlement
