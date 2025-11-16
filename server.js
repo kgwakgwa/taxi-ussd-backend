@@ -1,36 +1,56 @@
 const express = require("express");
 const bodyParser = require("body-parser");
 const fs = require("fs");
+const path = require("path");
 const csv = require("csv-parser");
 
 const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 
-// In-memory session storage
+// --- In-memory storage ---
 const sessions = {};
 const trips = {};
 let tripCounter = 1;
 
-// Load all locations from CSV at startup
-// CSV format assumed: town,location
+// --- Load locations from CSV ---
 const locations = [];
-fs.createReadStream("data/locations.csv")
+fs.createReadStream(path.join(__dirname, "data", "locations.csv"))
   .pipe(csv())
   .on("data", (row) => {
-    // Expect row.town and row.location
     locations.push({ town: row.town, name: row.location });
   })
   .on("end", () => {
     console.log(`Loaded ${locations.length} locations from CSV`);
   });
 
-// Helper function for USSD response
+// --- Approximate distance (km) between towns ---
+// For simplicity, distances are approximate between main towns
+const distanceMap = {
+  "Zeerust": { "Mahikeng": 30, "Lehurutshe": 25, "Dinkokana": 28, "Mokgola": 15, "Autumn Leaves Mall": 5, "Lekubu": 20 },
+  "Mahikeng": { "Zeerust": 30, "Lehurutshe": 15, "Dinkokana": 10, "Mokgola": 18, "Autumn Leaves Mall": 8, "Lekubu": 12 },
+  "Lehurutshe": { "Zeerust": 25, "Mahikeng": 15, "Dinkokana": 12, "Mokgola": 10, "Autumn Leaves Mall": 6, "Lekubu": 8 },
+  "Dinkokana": { "Zeerust": 28, "Mahikeng": 10, "Lehurutshe": 12, "Mokgola": 14, "Autumn Leaves Mall": 7, "Lekubu": 9 },
+  "Mokgola": { "Zeerust": 15, "Mahikeng": 18, "Lehurutshe": 10, "Dinkokana": 14, "Autumn Leaves Mall": 5, "Lekubu": 8 },
+  "Autumn Leaves Mall": { "Zeerust": 5, "Mahikeng": 8, "Lehurutshe": 6, "Dinkokana": 7, "Mokgola": 5, "Lekubu": 4 },
+  "Lekubu": { "Zeerust": 20, "Mahikeng": 12, "Lehurutshe": 8, "Dinkokana": 9, "Mokgola": 8, "Autumn Leaves Mall": 4 }
+};
+
+// --- Fare calculation ---
+function calculateFare(distanceKm) {
+  if (distanceKm <= 5) return "R25 - R50";
+  if (distanceKm <= 10) return "R50 - R70";
+  if (distanceKm <= 20) return "R70 - R85";
+  if (distanceKm <= 30) return "R85 - R100";
+  return "R100+"; // fallback
+}
+
+// --- Helper for USSD responses ---
 function atResponse(message, end = false) {
   return (end ? "END " : "CON ") + message;
 }
 
-// --- USSD endpoint
+// --- USSD endpoint ---
 app.post("/ussd", (req, res) => {
   const { sessionId = "", phoneNumber = "", text = "" } = req.body;
   const userText = text.trim();
@@ -64,6 +84,7 @@ app.post("/ussd", (req, res) => {
       const pickIndex = parseInt(inputs[1], 10) - 1;
       if (!locations[pickIndex]) return res.send(atResponse("Invalid pickup. Try again.", true));
       session.data.pickup = locations[pickIndex].name;
+      session.data.pickupTown = locations[pickIndex].town;
 
       let menu = "Select Drop-off Location:\n";
       locations.forEach((loc, i) => {
@@ -73,17 +94,24 @@ app.post("/ussd", (req, res) => {
       return res.send(atResponse(menu));
     }
 
-    // Step 2c: Confirm trip
+    // Step 2c: Confirm trip and calculate fare
     if (inputs.length === 3) {
       const dropIndex = parseInt(inputs[2], 10) - 1;
       if (!locations[dropIndex]) return res.send(atResponse("Invalid drop-off. Try again.", true));
       session.data.dropoff = locations[dropIndex].name;
+      session.data.dropoffTown = locations[dropIndex].town;
 
-      // Estimated fare stub
-      const estimatedFare = "R25 - R50";
+      // Estimate distance between towns
+      let dist = 5; // default if same town
+      if (session.data.pickupTown !== session.data.dropoffTown) {
+        const map = distanceMap[session.data.pickupTown];
+        dist = map ? (map[session.data.dropoffTown] || 10) : 10;
+      }
+
+      const fare = calculateFare(dist);
 
       return res.send(atResponse(
-        `Confirm Trip:\nFrom: ${session.data.pickup}\nTo: ${session.data.dropoff}\nEstimated Fare: ${estimatedFare}\n1. Confirm\n2. Cancel`
+        `Confirm Trip:\nFrom: ${session.data.pickup}\nTo: ${session.data.dropoff}\nEstimated Fare: ${fare}\n1. Confirm\n2. Cancel`
       ));
     }
 
@@ -123,9 +151,9 @@ app.post("/ussd", (req, res) => {
   return res.send(atResponse("Invalid option.", true));
 });
 
-// Simple health check
+// --- Health check ---
 app.get("/", (req, res) => res.send("QuickRide backend running"));
 
-// Start server
+// --- Start server ---
 const port = process.env.PORT || 10000;
 app.listen(port, () => console.log(`Server running on port ${port}`));
