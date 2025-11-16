@@ -11,7 +11,9 @@ app.use(bodyParser.json());
 // --- In-memory storage ---
 const sessions = {};
 const trips = {};
+const drivers = {}; // driverId -> { name, idNumber, phone, loggedIn }
 let tripCounter = 1;
+let driverCounter = 1;
 
 // --- Load locations from CSV ---
 const locations = [];
@@ -25,7 +27,6 @@ fs.createReadStream(path.join(__dirname, "data", "locations.csv"))
   });
 
 // --- Approximate distance (km) between towns ---
-// For simplicity, distances are approximate between main towns
 const distanceMap = {
   "Zeerust": { "Mahikeng": 30, "Lehurutshe": 25, "Dinkokana": 28, "Mokgola": 15, "Autumn Leaves Mall": 5, "Lekubu": 20 },
   "Mahikeng": { "Zeerust": 30, "Lehurutshe": 15, "Dinkokana": 10, "Mokgola": 18, "Autumn Leaves Mall": 8, "Lekubu": 12 },
@@ -42,7 +43,7 @@ function calculateFare(distanceKm) {
   if (distanceKm <= 10) return "R50 - R70";
   if (distanceKm <= 20) return "R70 - R85";
   if (distanceKm <= 30) return "R85 - R100";
-  return "R100+"; // fallback
+  return "R100+";
 }
 
 // --- Helper for USSD responses ---
@@ -56,20 +57,16 @@ app.post("/ussd", (req, res) => {
   const userText = text.trim();
   const inputs = userText === "" ? [] : userText.split("*");
 
-  // Initialize session
   if (!sessions[sessionId]) sessions[sessionId] = { phoneNumber, step: "MAIN", data: {} };
   const session = sessions[sessionId];
 
-  // --- Step 1: Main Menu
   if (inputs.length === 0) {
     return res.send(atResponse(
       "Welcome to QuickRide\n1. Request Taxi\n2. Check Trip Status\n3. Cancel Trip"
     ));
   }
 
-  // --- Step 2: Request Taxi Flow
   if (inputs[0] === "1") {
-    // Step 2a: Pick-up selection
     if (inputs.length === 1) {
       let menu = "Select Pickup Location:\n";
       locations.forEach((loc, i) => {
@@ -79,7 +76,6 @@ app.post("/ussd", (req, res) => {
       return res.send(atResponse(menu));
     }
 
-    // Step 2b: Drop-off selection
     if (inputs.length === 2) {
       const pickIndex = parseInt(inputs[1], 10) - 1;
       if (!locations[pickIndex]) return res.send(atResponse("Invalid pickup. Try again.", true));
@@ -94,20 +90,17 @@ app.post("/ussd", (req, res) => {
       return res.send(atResponse(menu));
     }
 
-    // Step 2c: Confirm trip and calculate fare
     if (inputs.length === 3) {
       const dropIndex = parseInt(inputs[2], 10) - 1;
       if (!locations[dropIndex]) return res.send(atResponse("Invalid drop-off. Try again.", true));
       session.data.dropoff = locations[dropIndex].name;
       session.data.dropoffTown = locations[dropIndex].town;
 
-      // Estimate distance between towns
-      let dist = 5; // default if same town
+      let dist = 5;
       if (session.data.pickupTown !== session.data.dropoffTown) {
         const map = distanceMap[session.data.pickupTown];
         dist = map ? (map[session.data.dropoffTown] || 10) : 10;
       }
-
       const fare = calculateFare(dist);
 
       return res.send(atResponse(
@@ -115,7 +108,6 @@ app.post("/ussd", (req, res) => {
       ));
     }
 
-    // Step 2d: Final confirmation
     if (inputs.length === 4) {
       if (inputs[3] === "1") {
         const tid = `TR-${tripCounter++}`;
@@ -124,7 +116,11 @@ app.post("/ussd", (req, res) => {
           phone: session.phoneNumber,
           pickup: session.data.pickup,
           dropoff: session.data.dropoff,
-          status: "searching"
+          pickupTown: session.data.pickupTown,
+          dropoffTown: session.data.dropoffTown,
+          fare: calculateFare(5), // default fare, optional: recalc
+          status: "pending",
+          driverId: null
         };
         return res.send(atResponse(`Trip confirmed! Trip ID: ${tid}`, true));
       } else {
@@ -133,7 +129,6 @@ app.post("/ussd", (req, res) => {
     }
   }
 
-  // --- Step 3: Check Trip Status
   if (inputs[0] === "2") {
     if (inputs.length === 1) return res.send(atResponse("Enter Trip ID:"));
     const t = trips[inputs[1]];
@@ -141,7 +136,6 @@ app.post("/ussd", (req, res) => {
     return res.send(atResponse(`Trip ${t.id} status: ${t.status}`, true));
   }
 
-  // --- Step 4: Cancel Trip
   if (inputs[0] === "3") {
     if (inputs.length === 1) return res.send(atResponse("Enter Trip ID to cancel:"));
     if (trips[inputs[1]]) trips[inputs[1]].status = "cancelled";
@@ -151,9 +145,69 @@ app.post("/ussd", (req, res) => {
   return res.send(atResponse("Invalid option.", true));
 });
 
-// --- Health check ---
+// --- Driver Endpoints ---
+
+// Register driver
+app.post("/driver/register", (req, res) => {
+  const { name, idNumber, phone } = req.body;
+  if (!name || !idNumber || !phone) return res.status(400).json({ error: "All fields required" });
+
+  const driverId = `DR-${driverCounter++}`;
+  drivers[driverId] = { name, idNumber, phone, loggedIn: false };
+  return res.json({ message: "Driver registered", driverId });
+});
+
+// Login driver
+app.post("/driver/login", (req, res) => {
+  const { phone } = req.body;
+  const driverEntry = Object.entries(drivers).find(([id, d]) => d.phone === phone);
+  if (!driverEntry) return res.status(400).json({ error: "Driver not found" });
+
+  const [driverId, driver] = driverEntry;
+  driver.loggedIn = true;
+  return res.json({ message: "Login successful", driverId, name: driver.name });
+});
+
+// Get pending trips
+app.get("/driver/trips/pending", (req, res) => {
+  const pending = Object.values(trips).filter(t => t.status === "pending" && !t.driverId);
+  return res.json(pending);
+});
+
+// Accept trip
+app.post("/driver/trips/:id/accept", (req, res) => {
+  const { driverId } = req.body;
+  const trip = trips[req.params.id];
+  if (!trip) return res.status(404).json({ error: "Trip not found" });
+  if (trip.driverId) return res.status(400).json({ error: "Trip already taken" });
+
+  trip.driverId = driverId;
+  trip.status = "accepted";
+  return res.json({ message: "Trip accepted", trip });
+});
+
+// Decline trip
+app.post("/driver/trips/:id/decline", (req, res) => {
+  const trip = trips[req.params.id];
+  if (!trip) return res.status(404).json({ error: "Trip not found" });
+
+  return res.json({ message: "Trip declined" });
+});
+
+// Update trip status
+app.post("/driver/trips/:id/update", (req, res) => {
+  const { status } = req.body;
+  const trip = trips[req.params.id];
+  if (!trip) return res.status(404).json({ error: "Trip not found" });
+  if (!["pickedup", "completed", "cancelled"].includes(status)) return res.status(400).json({ error: "Invalid status" });
+
+  trip.status = status;
+  return res.json({ message: "Trip status updated", trip });
+});
+
+// Health check
 app.get("/", (req, res) => res.send("QuickRide backend running"));
 
-// --- Start server ---
+// Start server
 const port = process.env.PORT || 10000;
 app.listen(port, () => console.log(`Server running on port ${port}`));
