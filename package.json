@@ -1,7 +1,7 @@
 {
   "name": "taxi-ussd-backend",
   "version": "1.0.0",
-  "description": "USSD backend for QuickRide pilot",
+  "description": "USSD backend for QuickRide pilot with CSV locations",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
