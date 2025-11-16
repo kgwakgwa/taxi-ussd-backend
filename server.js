@@ -1,350 +1,131 @@
-// Express USSD backend for QuickRide (FULL)
-// Features:
-// - Loads CSV from ./data/locations.csv
-// - Supports Town -> Zone -> DropTown -> DropZone flow (Option C)
-// - Paging for long lists
-// - If CSV contains latitude/longitude columns, applies distance filter (default 30 km)
-// - Simple in-memory session store (replace with Redis for production)
-
-const express = require('express');
-const bodyParser = require('body-parser');
-const fs = require('fs');
-const csv = require('csv-parser');
+const express = require("express");
+const bodyParser = require("body-parser");
+const fs = require("fs");
+const csv = require("csv-parser");
 
 const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 
-// ----------------------------
-// CONFIG
-// ----------------------------
-const CSV_PATH = './data/locations.csv';
-const PAGE_SIZE = 6;
-const MAX_DISTANCE_KM = 30; // used only when lat/lon available
+// In-memory session storage
+const sessions = {};
+const trips = {};
+let tripCounter = 1;
 
-// ----------------------------
-// LOAD CSV INTO MEMORY
-// ----------------------------
-let locations = []; // each item: {zone_id,town,zone_name,zone_type,approx_distance_km,notes, latitude?, longitude?}
-
-function loadCsv() {
-  locations = [];
-  if (!fs.existsSync(CSV_PATH)) {
-    console.error(`CSV file not found at ${CSV_PATH}`);
-    return;
-  }
-
-  fs.createReadStream(CSV_PATH)
-    .pipe(csv())
-    .on('data', (row) => {
-      // Normalize keys to lower-case for easier access
-      const normalized = {};
-      Object.keys(row).forEach(k => normalized[k.trim().toLowerCase()] = row[k].trim());
-
-      const item = {
-        zone_id: normalized['zone_id'] || normalized['id'] || null,
-        town: normalized['town'] || normalized['city'] || normalized['place'] || '',
-        zone_name: normalized['zone_name'] || normalized['location'] || normalized['name'] || '',
-        zone_type: normalized['zone_type'] || '',
-        approx_distance_km: normalized['approx_distance_km'] ? parseFloat(normalized['approx_distance_km']) : null,
-        notes: normalized['notes'] || ''
-      };
-
-      // optional lat/lon if present
-      if (normalized['latitude'] && normalized['longitude']) {
-        item.latitude = parseFloat(normalized['latitude']);
-        item.longitude = parseFloat(normalized['longitude']);
-      }
-
-      locations.push(item);
-    })
-    .on('end', () => {
-      console.log(`CSV loaded: ${locations.length} locations`);
-    })
-    .on('error', (err) => {
-      console.error('Error loading CSV:', err.message);
-    });
-}
-
-loadCsv();
-
-// ----------------------------
-// UTIL: haversine distance
-// ----------------------------
-function haversineKm(lat1, lon1, lat2, lon2) {
-  const R = 6371.0;
-  const toRad = (d) => d * Math.PI / 180;
-  const dLat = toRad(lat2 - lat1);
-  const dLon = toRad(lon2 - lon1);
-  const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
-            Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
-            Math.sin(dLon/2) * Math.sin(dLon/2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-  return R * c;
-}
-
-// ----------------------------
-// SESSION STORE (in-memory)
-// ----------------------------
-const sessions = {}; // sessionId -> session object
-
-function getSession(sessionId) {
-  if (!sessions[sessionId]) {
-    sessions[sessionId] = {
-      step: 'MAIN',
-      page: 1
-    };
-  }
-  return sessions[sessionId];
-}
-
-// ----------------------------
-// HELPERS: lists, paging
-// ----------------------------
-function uniqueTowns() {
-  const map = {};
-  locations.forEach(l => {
-    const t = l.town || 'Unknown';
-    map[t] = true;
+// Load all locations from CSV at startup
+// CSV format assumed: town,location
+const locations = [];
+fs.createReadStream("data/locations.csv")
+  .pipe(csv())
+  .on("data", (row) => {
+    // Expect row.town and row.location
+    locations.push({ town: row.town, name: row.location });
+  })
+  .on("end", () => {
+    console.log(`Loaded ${locations.length} locations from CSV`);
   });
-  return Object.keys(map).sort();
+
+// Helper function for USSD response
+function atResponse(message, end = false) {
+  return (end ? "END " : "CON ") + message;
 }
 
-function zonesForTown(town) {
-  return locations.filter(l => (l.town || '').toLowerCase() === (town || '').toLowerCase());
-}
+// --- USSD endpoint
+app.post("/ussd", (req, res) => {
+  const { sessionId = "", phoneNumber = "", text = "" } = req.body;
+  const userText = text.trim();
+  const inputs = userText === "" ? [] : userText.split("*");
 
-function paginate(items, page = 1, perPage = PAGE_SIZE) {
-  const total = items.length;
-  const start = (page - 1) * perPage;
-  const end = start + perPage;
-  const slice = items.slice(start, end);
-  const hasMore = end < total;
-  return { slice, hasMore, total };
-}
+  // Initialize session
+  if (!sessions[sessionId]) sessions[sessionId] = { phoneNumber, step: "MAIN", data: {} };
+  const session = sessions[sessionId];
 
-function buildMenuFromArray(items, page = 1, perPage = PAGE_SIZE, title = '') {
-  const { slice, hasMore } = paginate(items, page, perPage);
-  let txt = title ? `${title}
-` : '';
-  slice.forEach((it, idx) => {
-    txt += `${idx + 1}. ${it}
-`;
-  });
-  if (hasMore) txt += `0. More`;
-  return txt.trim();
-}
-
-function buildZoneMenuFromObjects(zoneObjs, page = 1, perPage = PAGE_SIZE, title = '') {
-  const { slice, hasMore } = paginate(zoneObjs, page, perPage);
-  let txt = title ? `${title}
-` : '';
-  slice.forEach((z, idx) => {
-    txt += `${idx + 1}. ${z.zone_name}`;
-    if (z.zone_type) txt += ` (${z.zone_type})`;
-    txt += `
-`;
-  });
-  if (hasMore) txt += `0. More`;
-  return txt.trim();
-}
-
-// ----------------------------
-// MAIN USSD CALLBACK
-// ----------------------------
-app.post('/api/ussd/callback', (req, res) => {
-  // Africa's Talking usually sends: sessionId, serviceCode, phoneNumber, text
-  const { sessionId, serviceCode, phoneNumber } = req.body;
-  // For robustness, accept both 'text' and 'userText' etc.
-  const text = (req.body.text || req.body.userText || '').toString();
-  const userRaw = text.trim();
-
-  const session = getSession(sessionId || phoneNumber || 'anon');
-  let response = '';
-
-  // Helper to send
-  function send(resp) {
-    res.set('Content-Type', 'text/plain');
-    return res.send(resp);
+  // --- Step 1: Main Menu
+  if (inputs.length === 0) {
+    return res.send(atResponse(
+      "Welcome to QuickRide\n1. Request Taxi\n2. Check Trip Status\n3. Cancel Trip"
+    ));
   }
 
-  // MAIN menu
-  if (session.step === 'MAIN') {
-    if (!userRaw) {
-      response = `CON Welcome to QuickRide
-1. Book Taxi
-2. My Rides
-3. Help`;
-    } else if (userRaw === '1') {
-      session.step = 'PICK_TOWN';
-      session.page = 1;
-      const towns = uniqueTowns();
-      response = `CON Select PICK-UP town:
-` + buildMenuFromArray(towns, 1, PAGE_SIZE);
-    } else if (userRaw === '2') {
-      response = `END Feature not implemented yet.`;
-    } else if (userRaw === '3') {
-      response = `END For help call 0800-000-000`;
-    } else {
-      response = `END Invalid option`;
-    }
-    return send(response);
-  }
-
-  // PICK_TOWN
-  if (session.step === 'PICK_TOWN') {
-    const towns = uniqueTowns();
-    const page = session.page || 1;
-    const parsed = parseInt(userRaw);
-    if (isNaN(parsed)) return send('END Invalid selection');
-
-    // More
-    if (parsed === 0) {
-      session.page = page + 1;
-      response = `CON Select PICK-UP town:
-` + buildMenuFromArray(towns, session.page, PAGE_SIZE);
-      return send(response);
-    }
-
-    const index = (page - 1) * PAGE_SIZE + (parsed - 1);
-    if (index < 0 || index >= towns.length) return send('END Invalid selection');
-
-    session.pickupTown = towns[index];
-    session.step = 'PICK_ZONE';
-    session.page = 1;
-    const zones = zonesForTown(session.pickupTown);
-    response = `CON Select PICK-UP zone in ${session.pickupTown}:
-` + buildZoneMenuFromObjects(zones, 1, PAGE_SIZE);
-    return send(response);
-  }
-
-  // PICK_ZONE
-  if (session.step === 'PICK_ZONE') {
-    const zones = zonesForTown(session.pickupTown);
-    const page = session.page || 1;
-    const parsed = parseInt(userRaw);
-    if (isNaN(parsed)) return send('END Invalid selection');
-
-    if (parsed === 0) {
-      session.page = page + 1;
-      response = `CON Select PICK-UP zone in ${session.pickupTown}:
-` + buildZoneMenuFromObjects(zones, session.page, PAGE_SIZE);
-      return send(response);
-    }
-
-    const idx = (page - 1) * PAGE_SIZE + (parsed - 1);
-    if (idx < 0 || idx >= zones.length) return send('END Invalid selection');
-
-    session.pickupZone = zones[idx]; // object
-    session.step = 'DROP_TOWN';
-    session.page = 1;
-
-    // Build drop town list: if lat/lon available we can filter by distance
-    let candidateTowns;
-    if (session.pickupZone.latitude && session.pickupZone.longitude) {
-      // compute distances to each zone, then unique towns whose ANY zone is within MAX_DISTANCE_KM
-      const withinTowns = {};
-      locations.forEach(l => {
-        if (l.latitude && l.longitude) {
-          const d = haversineKm(session.pickupZone.latitude, session.pickupZone.longitude, l.latitude, l.longitude);
-          if (d <= MAX_DISTANCE_KM) withinTowns[l.town] = true;
-        }
+  // --- Step 2: Request Taxi Flow
+  if (inputs[0] === "1") {
+    // Step 2a: Pick-up selection
+    if (inputs.length === 1) {
+      let menu = "Select Pickup Location:\n";
+      locations.forEach((loc, i) => {
+        menu += `${i + 1}. ${loc.name}\n`;
       });
-      candidateTowns = Object.keys(withinTowns).sort();
-      if (candidateTowns.length === 0) {
-        // fallback: allow all towns
-        candidateTowns = uniqueTowns();
+      menu += "0. Back";
+      return res.send(atResponse(menu));
+    }
+
+    // Step 2b: Drop-off selection
+    if (inputs.length === 2) {
+      const pickIndex = parseInt(inputs[1], 10) - 1;
+      if (!locations[pickIndex]) return res.send(atResponse("Invalid pickup. Try again.", true));
+      session.data.pickup = locations[pickIndex].name;
+
+      let menu = "Select Drop-off Location:\n";
+      locations.forEach((loc, i) => {
+        menu += `${i + 1}. ${loc.name}\n`;
+      });
+      menu += "0. Back";
+      return res.send(atResponse(menu));
+    }
+
+    // Step 2c: Confirm trip
+    if (inputs.length === 3) {
+      const dropIndex = parseInt(inputs[2], 10) - 1;
+      if (!locations[dropIndex]) return res.send(atResponse("Invalid drop-off. Try again.", true));
+      session.data.dropoff = locations[dropIndex].name;
+
+      // Estimated fare stub
+      const estimatedFare = "R25 - R50";
+
+      return res.send(atResponse(
+        `Confirm Trip:\nFrom: ${session.data.pickup}\nTo: ${session.data.dropoff}\nEstimated Fare: ${estimatedFare}\n1. Confirm\n2. Cancel`
+      ));
+    }
+
+    // Step 2d: Final confirmation
+    if (inputs.length === 4) {
+      if (inputs[3] === "1") {
+        const tid = `TR-${tripCounter++}`;
+        trips[tid] = {
+          id: tid,
+          phone: session.phoneNumber,
+          pickup: session.data.pickup,
+          dropoff: session.data.dropoff,
+          status: "searching"
+        };
+        return res.send(atResponse(`Trip confirmed! Trip ID: ${tid}`, true));
+      } else {
+        return res.send(atResponse("Trip cancelled.", true));
       }
-    } else {
-      // no lat/lon: allow all towns
-      candidateTowns = uniqueTowns();
     }
-
-    session.candidateTowns = candidateTowns; // store for drop selection
-    response = `CON Select DROP-OFF town:
-` + buildMenuFromArray(candidateTowns, 1, PAGE_SIZE);
-    return send(response);
   }
 
-  // DROP_TOWN
-  if (session.step === 'DROP_TOWN') {
-    const towns = session.candidateTowns || uniqueTowns();
-    const page = session.page || 1;
-    const parsed = parseInt(userRaw);
-    if (isNaN(parsed)) return send('END Invalid selection');
-
-    if (parsed === 0) {
-      session.page = page + 1;
-      response = `CON Select DROP-OFF town:
-` + buildMenuFromArray(towns, session.page, PAGE_SIZE);
-      return send(response);
-    }
-
-    const index = (page - 1) * PAGE_SIZE + (parsed - 1);
-    if (index < 0 || index >= towns.length) return send('END Invalid selection');
-
-    session.dropTown = towns[index];
-    session.step = 'DROP_ZONE';
-    session.page = 1;
-
-    const zones = zonesForTown(session.dropTown);
-    response = `CON Select DROP-OFF zone in ${session.dropTown}:
-` + buildZoneMenuFromObjects(zones, 1, PAGE_SIZE);
-    return send(response);
+  // --- Step 3: Check Trip Status
+  if (inputs[0] === "2") {
+    if (inputs.length === 1) return res.send(atResponse("Enter Trip ID:"));
+    const t = trips[inputs[1]];
+    if (!t) return res.send(atResponse("Trip not found.", true));
+    return res.send(atResponse(`Trip ${t.id} status: ${t.status}`, true));
   }
 
-  // DROP_ZONE
-  if (session.step === 'DROP_ZONE') {
-    const zones = zonesForTown(session.dropTown);
-    const page = session.page || 1;
-    const parsed = parseInt(userRaw);
-    if (isNaN(parsed)) return send('END Invalid selection');
-
-    if (parsed === 0) {
-      session.page = page + 1;
-      response = `CON Select DROP-OFF zone in ${session.dropTown}:
-` + buildZoneMenuFromObjects(zones, session.page, PAGE_SIZE);
-      return send(response);
-    }
-
-    const idx = (page - 1) * PAGE_SIZE + (parsed - 1);
-    if (idx < 0 || idx >= zones.length) return send('END Invalid selection');
-
-    session.dropZone = zones[idx];
-    session.step = 'CONFIRM';
-
-    response = `CON Confirm Ride:
-From: ${session.pickupZone.zone_name} (${session.pickupTown})
-To: ${session.dropZone.zone_name} (${session.dropTown})
-1. Confirm
-2. Cancel`;
-    return send(response);
+  // --- Step 4: Cancel Trip
+  if (inputs[0] === "3") {
+    if (inputs.length === 1) return res.send(atResponse("Enter Trip ID to cancel:"));
+    if (trips[inputs[1]]) trips[inputs[1]].status = "cancelled";
+    return res.send(atResponse("Trip cancelled.", true));
   }
 
-  // CONFIRM
-  if (session.step === 'CONFIRM') {
-    if (userRaw === '1') {
-      // create ride request placeholder -- here you would save to DB / notify drivers
-      session.step = 'DONE';
-      response = `END Your ride request has been received. We will notify drivers nearby.`;
-    } else {
-      session.step = 'MAIN';
-      response = `END Ride cancelled.`;
-    }
-
-    return send(response);
-  }
-
-  // fallback
-  return send('END Unexpected error');
+  return res.send(atResponse("Invalid option.", true));
 });
 
-// Admin endpoints (optional) -- reload CSV without restart
-app.post('/admin/reload-csv', (req, res) => {
-  loadCsv();
-  return res.json({ ok: true, locations: locations.length });
-});
+// Simple health check
+app.get("/", (req, res) => res.send("QuickRide backend running"));
 
-// Start
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`USSD backend running on port ${PORT}`));
+// Start server
+const port = process.env.PORT || 10000;
+app.listen(port, () => console.log(`Server running on port ${port}`));
