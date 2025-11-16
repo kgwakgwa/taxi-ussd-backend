@@ -4,9 +4,6 @@ const fs = require("fs");
 const path = require("path");
 const csv = require("csv-parser");
 
-const cors = require("cors");
-app.use(cors());
-
 const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
