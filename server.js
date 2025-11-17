@@ -3,24 +3,29 @@ const bodyParser = require("body-parser");
 const fs = require("fs");
 const path = require("path");
 const csv = require("csv-parser");
+
+// ✅ ADD CORS HERE
 const cors = require("cors");
 
 const app = express();
 
-// --- CORS FIX ---
-app.use(cors({
-  origin: "*", // Allow all (you can later restrict to Codesandbox)
-  methods: ["GET", "POST", "PUT", "DELETE"],
-  allowedHeaders: ["Content-Type"]
-}));
+// ✅ ENABLE CORS FOR ALL FRONTENDS (Codesandbox, Replit, localhost, etc.)
+app.use(
+  cors({
+    origin: "*",
+    methods: ["GET", "POST", "PUT", "DELETE"],
+    allowedHeaders: ["Content-Type"],
+  })
+);
 
+// Body parser
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 
 // --- In-memory storage ---
 const sessions = {};
 const trips = {};
-const drivers = {}; // driverId -> { name, idNumber, phone, loggedIn }
+const drivers = {}; 
 let tripCounter = 1;
 let driverCounter = 1;
 
@@ -35,7 +40,7 @@ fs.createReadStream(path.join(__dirname, "data", "locations.csv"))
     console.log(`Loaded ${locations.length} locations from CSV`);
   });
 
-// --- Approximate distance (km) between towns ---
+// --- Approximate distance map ---
 const distanceMap = {
   "Zeerust": { "Mahikeng": 30, "Lehurutshe": 25, "Dinkokana": 28, "Mokgola": 15, "Autumn Leaves Mall": 5, "Lekubu": 20 },
   "Mahikeng": { "Zeerust": 30, "Lehurutshe": 15, "Dinkokana": 10, "Mokgola": 18, "Autumn Leaves Mall": 8, "Lekubu": 12 },
@@ -46,7 +51,6 @@ const distanceMap = {
   "Lekubu": { "Zeerust": 20, "Mahikeng": 12, "Lehurutshe": 8, "Dinkokana": 9, "Mokgola": 8, "Autumn Leaves Mall": 4 }
 };
 
-// --- Fare calculation ---
 function calculateFare(distanceKm) {
   if (distanceKm <= 5) return "R25 - R50";
   if (distanceKm <= 10) return "R50 - R70";
@@ -55,24 +59,24 @@ function calculateFare(distanceKm) {
   return "R100+";
 }
 
-// --- Helper for USSD responses ---
 function atResponse(message, end = false) {
   return (end ? "END " : "CON ") + message;
 }
 
-// --- USSD endpoint ---
+// --- USSD Endpoint ---
 app.post("/ussd", (req, res) => {
   const { sessionId = "", phoneNumber = "", text = "" } = req.body;
   const userText = text.trim();
   const inputs = userText === "" ? [] : userText.split("*");
 
-  if (!sessions[sessionId]) sessions[sessionId] = { phoneNumber, step: "MAIN", data: {} };
+  if (!sessions[sessionId])
+    sessions[sessionId] = { phoneNumber, step: "MAIN", data: {} };
   const session = sessions[sessionId];
 
   if (inputs.length === 0) {
-    return res.send(atResponse(
-      "Welcome to QuickRide\n1. Request Taxi\n2. Check Trip Status\n3. Cancel Trip"
-    ));
+    return res.send(
+      atResponse("Welcome to QuickRide\n1. Request Taxi\n2. Check Trip Status\n3. Cancel Trip")
+    );
   }
 
   if (inputs[0] === "1") {
@@ -81,13 +85,12 @@ app.post("/ussd", (req, res) => {
       locations.forEach((loc, i) => {
         menu += `${i + 1}. ${loc.name}\n`;
       });
-      menu += "0. Back";
       return res.send(atResponse(menu));
     }
 
     if (inputs.length === 2) {
-      const pickIndex = parseInt(inputs[1], 10) - 1;
-      if (!locations[pickIndex]) return res.send(atResponse("Invalid pickup. Try again.", true));
+      const pickIndex = parseInt(inputs[1]) - 1;
+      if (!locations[pickIndex]) return res.send(atResponse("Invalid pickup.", true));
       session.data.pickup = locations[pickIndex].name;
       session.data.pickupTown = locations[pickIndex].town;
 
@@ -95,26 +98,24 @@ app.post("/ussd", (req, res) => {
       locations.forEach((loc, i) => {
         menu += `${i + 1}. ${loc.name}\n`;
       });
-      menu += "0. Back";
       return res.send(atResponse(menu));
     }
 
     if (inputs.length === 3) {
-      const dropIndex = parseInt(inputs[2], 10) - 1;
-      if (!locations[dropIndex]) return res.send(atResponse("Invalid drop-off. Try again.", true));
+      const dropIndex = parseInt(inputs[2]) - 1;
+      if (!locations[dropIndex]) return res.send(atResponse("Invalid drop-off.", true));
       session.data.dropoff = locations[dropIndex].name;
       session.data.dropoffTown = locations[dropIndex].town;
 
-      let dist = 5;
-      if (session.data.pickupTown !== session.data.dropoffTown) {
-        const map = distanceMap[session.data.pickupTown];
-        dist = map ? (map[session.data.dropoffTown] || 10) : 10;
-      }
+      const map = distanceMap[session.data.pickupTown] || {};
+      const dist = map[session.data.dropoffTown] || 5;
       const fare = calculateFare(dist);
 
-      return res.send(atResponse(
-        `Confirm Trip:\nFrom: ${session.data.pickup}\nTo: ${session.data.dropoff}\nEstimated Fare: ${fare}\n1. Confirm\n2. Cancel`
-      ));
+      return res.send(
+        atResponse(
+          `Confirm Trip:\nFrom: ${session.data.pickup}\nTo: ${session.data.dropoff}\nEstimated Fare: ${fare}\n1. Confirm\n2. Cancel`
+        )
+      );
     }
 
     if (inputs.length === 4) {
@@ -125,16 +126,11 @@ app.post("/ussd", (req, res) => {
           phone: session.phoneNumber,
           pickup: session.data.pickup,
           dropoff: session.data.dropoff,
-          pickupTown: session.data.pickupTown,
-          dropoffTown: session.data.dropoffTown,
-          fare: calculateFare(5),
           status: "pending",
-          driverId: null
         };
         return res.send(atResponse(`Trip confirmed! Trip ID: ${tid}`, true));
-      } else {
-        return res.send(atResponse("Trip cancelled.", true));
       }
+      return res.send(atResponse("Trip cancelled.", true));
     }
   }
 
@@ -146,7 +142,7 @@ app.post("/ussd", (req, res) => {
   }
 
   if (inputs[0] === "3") {
-    if (inputs.length === 1) return res.send(atResponse("Enter Trip ID to cancel:"));
+    if (inputs.length === 1) return res.send(atResponse("Enter Trip ID:"));
     if (trips[inputs[1]]) trips[inputs[1]].status = "cancelled";
     return res.send(atResponse("Trip cancelled.", true));
   }
@@ -156,64 +152,55 @@ app.post("/ussd", (req, res) => {
 
 // --- DRIVER ENDPOINTS ---
 
-// Register driver
 app.post("/driver/register", (req, res) => {
   const { name, idNumber, phone } = req.body;
   if (!name || !idNumber || !phone)
     return res.status(400).json({ error: "All fields required" });
 
   const driverId = `DR-${driverCounter++}`;
-  drivers[driverId] = { name, idNumber, phone, loggedIn: false };
-  return res.json({ message: "Driver registered", driverId });
+  drivers[driverId] = { name, idNumber, phone };
+  res.json({ message: "Driver registered", driverId });
 });
 
-// Login driver
 app.post("/driver/login", (req, res) => {
   const { phone } = req.body;
-  const driverEntry = Object.entries(drivers).find(([id, d]) => d.phone === phone);
-  if (!driverEntry) return res.status(400).json({ error: "Driver not found" });
+  const driverEntry = Object.entries(drivers).find(
+    ([id, d]) => d.phone === phone
+  );
+  if (!driverEntry)
+    return res.status(400).json({ error: "Driver not found" });
 
   const [driverId, driver] = driverEntry;
-  driver.loggedIn = true;
-  return res.json({ message: "Login successful", driverId, name: driver.name });
+  res.json({ message: "Login successful", driverId, name: driver.name });
 });
 
-// Get pending trips
-app.get("/driver/trips/ppending", (req, res) => {
-  const pending = Object.values(trips).filter(t => t.status === "pending" && !t.driverId);
-  return res.json(pending);
+app.get("/driver/trips/pending", (req, res) => {
+  const pending = Object.values(trips).filter(
+    (t) => t.status === "pending" && !t.driverId
+  );
+  res.json(pending);
 });
 
-// Accept trip
 app.post("/driver/trips/:id/accept", (req, res) => {
   const { driverId } = req.body;
   const trip = trips[req.params.id];
+
   if (!trip) return res.status(404).json({ error: "Trip not found" });
-  if (trip.driverId) return res.status(400).json({ error: "Trip already taken" });
+  if (trip.driverId)
+    return res.status(400).json({ error: "Already accepted" });
 
   trip.driverId = driverId;
   trip.status = "accepted";
-  return res.json({ message: "Trip accepted", trip });
+  res.json({ message: "Trip accepted", trip });
 });
 
-// Decline trip
-app.post("/driver/trips/:id/decline", (req, res) => {
-  const trip = trips[req.params.id];
-  if (!trip) return res.status(404).json({ error: "Trip not found" });
-
-  return res.json({ message: "Trip declined" });
-});
-
-// Update trip status
 app.post("/driver/trips/:id/update", (req, res) => {
   const { status } = req.body;
   const trip = trips[req.params.id];
-  if (!trip) return res.status(404).json({ error: "Trip not found" });
-  if (!["pickedup", "completed", "cancelled"].includes(status))
-    return res.status(400).json({ error: "Invalid status" });
 
+  if (!trip) return res.status(404).json({ error: "Trip not found" });
   trip.status = status;
-  return res.json({ message: "Trip status updated", trip });
+  res.json({ message: "Updated", trip });
 });
 
 // Health check
