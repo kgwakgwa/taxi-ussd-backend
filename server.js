@@ -3,8 +3,17 @@ const bodyParser = require("body-parser");
 const fs = require("fs");
 const path = require("path");
 const csv = require("csv-parser");
+const cors = require("cors");
 
 const app = express();
+
+// --- CORS FIX ---
+app.use(cors({
+  origin: "*", // Allow all (you can later restrict to Codesandbox)
+  methods: ["GET", "POST", "PUT", "DELETE"],
+  allowedHeaders: ["Content-Type"]
+}));
+
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 
@@ -118,7 +127,7 @@ app.post("/ussd", (req, res) => {
           dropoff: session.data.dropoff,
           pickupTown: session.data.pickupTown,
           dropoffTown: session.data.dropoffTown,
-          fare: calculateFare(5), // default fare, optional: recalc
+          fare: calculateFare(5),
           status: "pending",
           driverId: null
         };
@@ -145,12 +154,13 @@ app.post("/ussd", (req, res) => {
   return res.send(atResponse("Invalid option.", true));
 });
 
-// --- Driver Endpoints ---
+// --- DRIVER ENDPOINTS ---
 
 // Register driver
 app.post("/driver/register", (req, res) => {
   const { name, idNumber, phone } = req.body;
-  if (!name || !idNumber || !phone) return res.status(400).json({ error: "All fields required" });
+  if (!name || !idNumber || !phone)
+    return res.status(400).json({ error: "All fields required" });
 
   const driverId = `DR-${driverCounter++}`;
   drivers[driverId] = { name, idNumber, phone, loggedIn: false };
@@ -169,7 +179,7 @@ app.post("/driver/login", (req, res) => {
 });
 
 // Get pending trips
-app.get("/driver/trips/pending", (req, res) => {
+app.get("/driver/trips/ppending", (req, res) => {
   const pending = Object.values(trips).filter(t => t.status === "pending" && !t.driverId);
   return res.json(pending);
 });
@@ -199,7 +209,8 @@ app.post("/driver/trips/:id/update", (req, res) => {
   const { status } = req.body;
   const trip = trips[req.params.id];
   if (!trip) return res.status(404).json({ error: "Trip not found" });
-  if (!["pickedup", "completed", "cancelled"].includes(status)) return res.status(400).json({ error: "Invalid status" });
+  if (!["pickedup", "completed", "cancelled"].includes(status))
+    return res.status(400).json({ error: "Invalid status" });
 
   trip.status = status;
   return res.json({ message: "Trip status updated", trip });
